@@ -1,0 +1,252 @@
+##########################################
+`mvn clean install`  or `mvn clean install -DskipTests`
+`docker build -t service-name:version folder_path` 
+
+# run services locally
+`cd service-name`
+`mvn spring-boot:run` 
+`docker run -d --name service-name -p PORT:PORT service-name`  
+
+####################################
+# Create "Dockerfile" for all services and paste the above
+
+# Generic
+FROM openjdk:11-jdk-slim
+# FROM openjdk:11-jdk-alpine
+
+VOLUME /tmp
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} app.jar
+ENTRYPOINT ["java", "-jar", "/app.jar"]
+EXPOSE PORT_NO
+
+############################################
+#docker-compose.yml
+services:
+
+  eureka-service:
+    image: khayo/eureka-service
+    container_name: eureka-service
+    ports:
+      - '8761:8761'
+    networks:
+      - micronet
+
+  config-server:
+    image: khayo/config-server
+    container_name: config-server
+    ports:
+      - '9296:9296'
+    environment:
+      - EUREKA_SERVER_ADDRESS=${EUREKA_SERVER_ADDRESS}
+    depends_on:
+      - eureka-service
+    networks:
+      - micronet
+    healthcheck:
+      test: [ "CMD", "true" ]
+      # test: [ "CMD", "curl", "-f", "http://config-server:9296/actuator/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api-gateway:
+    image: khayo/api-gateway
+    container_name: api-gateway
+    ports:
+      - '9000:9090'
+    environment:
+      - EUREKA_SERVER_ADDRESS=${EUREKA_SERVER_ADDRESS}
+      - CONFIG_SERVER_URL=${CONFIG_SERVER_URL}
+      - ZIPKIN_URL=${ZIPKIN_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - micronet
+
+
+  zipkin:
+    image: openzipkin/zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      - micronet
+
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - micronet
+
+
+  auth-service:
+    image: khayo/auth-service
+    container_name: auth-service
+    ports:
+      - '7777:7777'
+    environment:
+      - EUREKA_SERVER_ADDRESS=${EUREKA_SERVER_ADDRESS}
+      - CONFIG_SERVER_URL=${CONFIG_SERVER_URL}
+      - spring.datasource.url=jdbc:mysql://mysql:3306/userdb?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+      - spring.datasource.username=${MYSQL_ROOT_USER}
+      - spring.datasource.password=${MYSQL_ROOT_PASSWORD}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+    networks:
+      - micronet
+
+
+  product-service:
+    image: khayo/product-service
+    container_name: product-service
+    ports:
+      - '8081:8081'
+    environment:
+      - EUREKA_SERVER_ADDRESS=${EUREKA_SERVER_ADDRESS}
+      - CONFIG_SERVER_URL=${CONFIG_SERVER_URL}
+      - spring.datasource.url=jdbc:mysql://mysql:3306/productdb?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+      - spring.datasource.username=${MYSQL_ROOT_USER}
+      - spring.datasource.password=${MYSQL_ROOT_PASSWORD}
+      - ZIPKIN_URL=${ZIPKIN_URL}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+      zipkin:
+        condition: service_healthy
+    networks:
+      - micronet
+
+  order-service:
+    image: khayo/order-service
+    container_name: order-service
+    ports:
+      - '8082:8082'
+    environment:
+      - EUREKA_SERVER_ADDRESS=${EUREKA_SERVER_ADDRESS}
+      - CONFIG_SERVER_URL=${CONFIG_SERVER_URL}
+      - spring.datasource.url=jdbc:mysql://mysql:3306/orderdb?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+      - spring.datasource.username=${MYSQL_ROOT_USER}
+      - spring.datasource.password=${MYSQL_ROOT_PASSWORD}
+      - ZIPKIN_URL=${ZIPKIN_URL}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+      zipkin:
+        condition: service_healthy
+    networks:
+      - micronet
+
+
+  payment-service:
+    image: khayo/payment-service
+    container_name: payment-service
+    ports:
+      - '8083:8083'
+    environment:
+      - EUREKA_SERVER_ADDRESS=${EUREKA_SERVER_ADDRESS}
+      - CONFIG_SERVER_URL=${CONFIG_SERVER_URL}
+      - spring.datasource.url=jdbc:mysql://mysql:3306/paymentdb?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+      - spring.datasource.username=${MYSQL_ROOT_USER}
+      - spring.datasource.password=${MYSQL_ROOT_PASSWORD}
+      - ZIPKIN_URL=${ZIPKIN_URL}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+      zipkin:
+        condition: service_healthy
+    networks:
+      - micronet
+
+
+  mysql:
+    image: mysql
+    ports:
+      - "3306:3306"
+    restart: always
+    environment:
+      # - MYSQL_USER=${MYSQL_USER}
+      # - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_ROOT_USER=${MYSQL_ROOT_USER}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - micronet
+
+
+networks:
+  micronet:
+    driver: bridge
+
+volumes:
+  db-data:
+
+################################
+# .env
+# Database credentials
+MYSQL_ROOT_USER=root
+MYSQL_ROOT_PASSWORD=Pass@1234
+# MYSQL_USER=root
+# MYSQL_PASSWORD=Pass@1234
+
+# Eureka and Config Server
+EUREKA_SERVER_ADDRESS=http://service-registry:8761/eureka
+CONFIG_SERVER_URL=http://config-server:9296
+
+# External Services
+ZIPKIN_URL=http://zipkin:9411
+REDIS_URL=redis://redis:6379
+
+#########################
+# run all to build and push images to docker hub
+docker build -t eureka-service:latest ./service-registry
+docker tag eureka-service:latest khayo/eureka-service
+docker push khayo/eureka-service
+
+docker build -t config-server:latest ./configserver
+docker tag config-server:latest khayo/config-server
+docker push khayo/config-server
+
+docker build -t api-gateway:latest ./apigateway
+docker tag api-gateway:latest khayo/api-gateway
+docker push khayo/api-gateway
+
+docker build -t auth-service:latest ./auth-service
+docker tag auth-service:latest khayo/auth-service
+docker push khayo/auth-service
+
+docker build -t product-service:latest ./productservice
+docker tag product-service:latest khayo/product-service
+docker push khayo/product-service
+
+docker build -t order-service:latest ./orderservice
+docker tag order-service:latest khayo/order-service
+docker push khayo/order-service
+
+docker build -t payment-service:latest ./paymentservice
+docker tag payment-service:latest khayo/payment-service
+docker push khayo/payment-service
+
+# finally
+docker-compose up -d
+#  Then send request to any service by using request collections under postman_collection
